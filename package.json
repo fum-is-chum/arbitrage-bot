@@ -1,19 +1,24 @@
 {
-  "name": "sui-kit-demo",
+  "name": "scallop-arbitrage-bot",
   "version": "1.0.0",
-  "description": "Demo programs for sui-kit",
-  "main": "index.js",
+  "description": "Arbitrage with scallop sdk flashloan",
+  "main": "main.ts",
   "scripts": {
-    "test": "ts-node index.ts",
     "start": "ts-node src/main.ts"
   },
-  "author": "Kriss",
-  "license": "ISC",
+  "author": "team@scallop.io",
+  "license": "Apache-2.0",
   "dependencies": {
     "@mysten/sui.js": "^0.44.0",
     "@scallop-io/sui-kit": "^0.44.0",
     "@scallop-io/sui-scallop-sdk": "^0.44.0",
     "aftermath-ts-sdk": "^1.1.2",
     "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.10",
+    "ts-node": "^10.9.1",
+    "tslib": "^2.6.2",
+    "typescript": "^5.2.2"
   }
 }
