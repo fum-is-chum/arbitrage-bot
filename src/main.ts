@@ -7,7 +7,7 @@ import { Logger } from './logger';
 import { CoinType, coins } from './coinTypes';
 import { formatCoinAmount } from './tradeUtils';
 import { getCurrentTimeUTC8 } from './dateUtils';
-import { getAllPairs } from './tradeUtils';
+import { getAllPairs, getAllCoin } from './tradeUtils';
 
 dotenv.config();
 
@@ -22,13 +22,16 @@ const tradeAmounts: { [key in CoinType]: number } = {
 async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAmounts: { [key in CoinType]: number }) {
     try {
         const secretKey = process.env.secretKey;
-        const fullnodeUrl = process.env.fullnodeUrl ?? '';
+        const fullnodeUrl = process.env.fullnodeUrl || 'https://fullnode.mainnet.sui.io:443';
 
         const scallop = new Scallop({
             secretKey,
             networkType: "mainnet",
             fullnodeUrls: [fullnodeUrl]
         });
+
+        const scallopClient = await scallop.createScallopClient();
+        const scallopBuilder = await scallop.createScallopBuilder();
 
         Logger.highlight(`You are executing with address: ${Logger.highlightValue(scallop.suiKit.currentAddress())}`);
 
@@ -43,9 +46,24 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
         );
 
         const afRouterApi = AfApi.Router();
-        const scallopBuilder = await scallop.createScallopBuilder();
         const tx = await scallopBuilder.createTxBlock();
         tx.setSender(scallop.suiKit.currentAddress());
+
+        // Merge input coins.
+        const userInCoins = await getAllCoin(scallopClient, scallop.suiKit.currentAddress() , coins[coinTypeIn].address); 
+        const userOutCoins = await getAllCoin(scallopClient, scallop.suiKit.currentAddress() , coins[coinTypeOut].address); 
+        if (userInCoins.length > 1 && coinTypeIn !== 'sui') {
+            const targetCoins = userInCoins.map((coinStruct) => {
+                return tx.txBlock.object(coinStruct.coinObjectId);
+            });
+            tx.mergeCoins(targetCoins[0], targetCoins.slice(1));
+        }
+        if (userOutCoins.length > 1 && coinTypeOut !== 'sui') {
+            const targetCoins = userOutCoins.map((coinStruct) => {
+                return tx.txBlock.object(coinStruct.coinObjectId);
+            });
+            tx.mergeCoins(targetCoins[0], targetCoins.slice(1));
+        }
 
         let flashloanAmount: number;
         let flashloanCoinType: CoinType;
@@ -110,14 +128,6 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
         }
 
         Logger.success('Success: ' + Logger.highlightValue(borrowFlashLoanResult.digest));
-
-        // const userCoins = await userCoins(scallop.suiKit.currentAddress());  // 假設 getUserCoins 是一個可以取得用戶幣的函數
-
-        // if (userCoins.length > 1) {
-        //     const argsUserCoins = userCoins.map((e) => tx.txBlock.object(normalizeSuiObjectId(e)));
-        //     tx.txBlock.mergeCoins(argsUserCoins[0], argsUserCoins.slice(1));
-        // }
-
     } catch (error) {
         Logger.warn(`Attempted flash loan arbitrage failed while trading ${coinTypeIn.toUpperCase()} to ${coinTypeOut.toUpperCase()}`);
 
