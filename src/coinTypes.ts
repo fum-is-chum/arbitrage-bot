@@ -1,4 +1,4 @@
-export type CoinType = "sui" | "usdc" | "usdt" |'eth' | "cetus";
+export type CoinType = "sui" | "usdc" | "usdt";
 
 type CoinInfo = {
     decimal: number;
@@ -18,12 +18,12 @@ export const coins: Record<CoinType, CoinInfo> = {
         decimal: 6,
         address: '0xc060006111016b8a020ad5b33834984a437aaa7d3c74c18e09a95d48aceab08c::coin::COIN'
     },
-    eth: {
-        decimal: 8,
-        address: '0xaf8cd5edc19c4512f4259f0bee101a40d41ebed738ade5874359610ef8eeced5::coin::COIN'
-    },
-    cetus: {
-        decimal: 9,
-        address: '0x06864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS'
-    },
+    // eth: {
+    //     decimal: 8,
+    //     address: '0xaf8cd5edc19c4512f4259f0bee101a40d41ebed738ade5874359610ef8eeced5::coin::COIN'
+    // },
+    // cetus: {
+    //     decimal: 9,
+    //     address: '0x06864a6f921804860930db6ddbe2e16acdf8504495ea7481637a1c8b9a8fe54b::cetus::CETUS'
+    // },
 };

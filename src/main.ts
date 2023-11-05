@@ -12,28 +12,28 @@ import { getAllPairs, getAllCoin } from './tradeUtils';
 dotenv.config();
 
 const tradeAmounts: { [key in CoinType]: number } = {
-    'sui': 200,
-    'usdc': 100, 
-    'usdt': 100,
-    'eth': 0.05,
-    'cetus': 2000
+    'sui': 2000,
+    'usdc': 1000, 
+    'usdt': 1000,
+    // 'eth': 0.05,
+    // 'cetus': 2000
 };
 
-async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAmounts: { [key in CoinType]: number }) {
-    try {
-        const secretKey = process.env.secretKey;
-        const fullnodeUrl = process.env.fullnodeUrl || 'https://fullnode.mainnet.sui.io:443';
+const secretKey = process.env.secretKey;
+const fullnodeUrl = process.env.fullnodeUrl || 'https://fullnode.mainnet.sui.io:443';
 
-        const scallop = new Scallop({
-            secretKey,
-            networkType: "mainnet",
-            fullnodeUrls: [fullnodeUrl]
-        });
+const scallop = new Scallop({
+    secretKey,
+    networkType: "mainnet",
+    fullnodeUrls: [fullnodeUrl]
+});
+
+async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAmounts: { [key in CoinType]: number }) {
+
+    try {
 
         const scallopClient = await scallop.createScallopClient();
         const scallopBuilder = await scallop.createScallopBuilder();
-
-        Logger.highlight(`You are executing with address: ${Logger.highlightValue(scallop.suiKit.currentAddress())}`);
 
         const AfApi = new AftermathApi(
             new SuiClient({
@@ -76,7 +76,6 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
 
         flashloanAmount = tradeAmounts[coinTypeIn] * 10 ** coins[coinTypeIn].decimal; // 考慮小數位數
         flashloanCoinType = coinTypeIn;
-        Logger.highlight(`Attempting to trade ${Logger.highlightValue(flashloanCoinType.toUpperCase())} with amount: ${Logger.highlightValue(formatCoinAmount(flashloanCoinType, BigInt(flashloanAmount)))}`);
 
         const [depositcoin, loan] = tx.borrowFlashLoan(flashloanAmount, flashloanCoinType);
 
@@ -89,7 +88,10 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
             });
 
         const route2Amount = completeRoute.coinOut.amount * BigInt(9993) / BigInt(10000);
-        Logger.highlight(`Expected coinOut is ${Logger.highlightValue(coinTypeOut.toUpperCase())} with amount: ${Logger.highlightValue(formatCoinAmount(coinTypeOut, route2Amount))}`);
+
+        // Logger.info(getCurrentTimeUTC8());
+        // Logger.highlight(`Attempting to trade ${Logger.highlightValue(flashloanCoinType.toUpperCase())} with amount: ${Logger.highlightValue(formatCoinAmount(flashloanCoinType, BigInt(flashloanAmount)))}`);
+        // Logger.highlight(`Expected coinOut is ${Logger.highlightValue(coinTypeOut.toUpperCase())} with amount: ${Logger.highlightValue(formatCoinAmount(coinTypeOut, route2Amount))}`);
 
         const completeRoute2 = await new Aftermath("MAINNET")
             .Router()
@@ -127,35 +129,45 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
             throw new Error("Unexpected response from signAndSendTxBlock, 'digest' not found.");
         }
 
+        Logger.info(getCurrentTimeUTC8());
+        Logger.highlight(`Attempting to trade ${Logger.highlightValue(flashloanCoinType.toUpperCase())} with amount: ${Logger.highlightValue(formatCoinAmount(flashloanCoinType, BigInt(flashloanAmount)))}`);
+        Logger.highlight(`Expected coinOut is ${Logger.highlightValue(coinTypeOut.toUpperCase())} with amount: ${Logger.highlightValue(formatCoinAmount(coinTypeOut, route2Amount))}`);
+
         Logger.success('Success: ' + Logger.highlightValue(borrowFlashLoanResult.digest));
+
     } catch (error) {
-        Logger.warn(`Attempted flash loan arbitrage failed while trading ${coinTypeIn.toUpperCase()} to ${coinTypeOut.toUpperCase()}`);
+        Logger.info(getCurrentTimeUTC8());
+        Logger.warn(`Attempted flash loan arbitrage failed while trading ${Logger.highlightValue(coinTypeIn.toUpperCase())}/${Logger.highlightValue(coinTypeOut.toUpperCase())}`);
 
-        if (error instanceof TypeError && error.message.includes("Cannot use 'in' operator")) {
-            Logger.error(`Encountered an error: ${error.message}`);
-        } else if (error instanceof Error && error.message.includes('Dry run failed')) {
-            const match = error.message.match(/command (\d+)/);
-            const commandNumber = match ? match[1] : 'unknown';
-            Logger.error(`Dry run failed at command ${commandNumber}: ${error.message}`);
-        } else if (error instanceof Error) {
-            Logger.error(error.message);
-        } else {
-            Logger.error(`An unknown error occurred: ${error}`);
-        }
+        // if (error instanceof TypeError && error.message.includes("Cannot use 'in' operator")) {
+        //     Logger.error(`Encountered an error: ${error.message}`);
+        // } else if (error instanceof Error && error.message.includes('Dry run failed')) {
+        //     const match = error.message.match(/command (\d+)/);
+        //     const commandNumber = match ? match[1] : 'unknown';
+        //     Logger.error(`Dry run failed at command ${commandNumber}: ${error.message}`);
+        // } else if (error instanceof Error) {
+        //     Logger.error(error.message);
+        // } else {
+        //     Logger.error(`An unknown error occurred: ${error}`);
+        // }
     }
-
-    Logger.info('-'.repeat(80));
 }
 
 async function main() {
     const pairs = getAllPairs(Object.keys(coins) as CoinType[]);
+    Logger.info('-'.repeat(80));
+    Logger.highlight(`You are executing with address: ${Logger.highlightValue(scallop.suiKit.currentAddress())}`);
     while (true) {
-        for (const [coinType1, coinType2] of pairs) {
-            Logger.info(getCurrentTimeUTC8());
-            Logger.highlight(`Executing trade from ${Logger.highlightValue(coinType1.toUpperCase())} to ${Logger.highlightValue(coinType2.toUpperCase())}`);
-            await executeTrade(coinType1, coinType2, tradeAmounts);
-            await new Promise(res => setTimeout(res, 2500));
-        }
+        // 使用 map 来创建一个 promise 数组，并让 TypeScript 推断类型
+        const tradePromises = pairs.map(([coinType1, coinType2]) =>
+            executeTrade(coinType1, coinType2, tradeAmounts)
+        );
+
+        // 等待所有的 promise 解决
+        await Promise.all(tradePromises);
+
+        // 每个交易之间暂停一下
+        await new Promise(resolve => setTimeout(resolve, 5000));
     }
 }
 
