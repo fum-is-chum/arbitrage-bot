@@ -8,28 +8,22 @@ import { CoinType, coins } from './coinTypes';
 import { formatCoinAmount } from './tradeUtils';
 import { getCurrentTimeUTC8 } from './dateUtils';
 import { getAllPairs, getAllCoin } from './tradeUtils';
-
+import { BACKUP_NODES, MAIN_NODES } from './const/rpc';
+import { runInBatch, shuffle } from './utils/common';
 dotenv.config();
 
 const tradeAmounts: { [key in CoinType]: number[] } = {
-    'sui': [200, 2000, 20000],
-    'usdc': [100, 1000, 10000], 
-    'usdt': [100, 1000, 10000],
+    'sui': [100, 200, 500],
+    'usdc': [50, 100, 1000],
+    'usdt': [50, 100, 1000],
     // 'eth': [0.01, 0.05, 0.1],
     // 'cetus': [1000, 2000, 3000]
 };
 
 const secretKey = process.env.secretKey;
-const fullnodeUrl = process.env.fullnodeUrl || 'https://fullnode.mainnet.sui.io:443';
 
-const scallop = new Scallop({
-    secretKey,
-    networkType: "mainnet",
-    fullnodeUrls: [fullnodeUrl]
-});
-
-async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAmounts: { [key in CoinType]: number[] }) {
-    for (const amount of tradeAmounts[coinTypeIn]) {
+async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAmounts: { [key in CoinType]: number[] }, scallop: Scallop) {
+    const tasks = tradeAmounts[coinTypeIn].map( (amount) => async () => {
         try {
             const scallopClient = await scallop.createScallopClient();
             const scallopBuilder = await scallop.createScallopBuilder();
@@ -37,7 +31,7 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
             const AfApi = new AftermathApi(
                 new SuiClient({
                     transport: new SuiHTTPTransport({
-                        url: fullnodeUrl,
+                        url: scallop.params.fullnodeUrls![0],
                     }),
                 }),
                 afConfigAddresses,
@@ -49,8 +43,8 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
             tx.setSender(scallop.suiKit.currentAddress());
 
             // Merge input coins.
-            const userInCoins = await getAllCoin(scallopClient, scallop.suiKit.currentAddress() , coins[coinTypeIn].address); 
-            const userOutCoins = await getAllCoin(scallopClient, scallop.suiKit.currentAddress() , coins[coinTypeOut].address); 
+            const userInCoins = await getAllCoin(scallopClient, scallop.suiKit.currentAddress(), coins[coinTypeIn].address);
+            const userOutCoins = await getAllCoin(scallopClient, scallop.suiKit.currentAddress(), coins[coinTypeOut].address);
             if (userInCoins.length > 1 && coinTypeIn !== 'sui') {
                 const targetCoins = userInCoins.map((coinStruct) => {
                     return tx.txBlock.object(coinStruct.coinObjectId);
@@ -149,27 +143,45 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
                 Logger.error(`An unknown error occurred: ${error}`);
             }
         }
-
-        await new Promise(resolve => setTimeout(resolve, 2500));
+    });
+    try {
+        await runInBatch(tasks, +(process.env.BATCH_SIZE ?? 6));
+    } catch (e) {
+        Logger.error(JSON.stringify(e));
     }
 }
 
 async function main() {
     const pairs = getAllPairs(Object.keys(coins) as CoinType[]);
+    const tradePromises: Promise<void>[] = Array(pairs.length).fill(0);
+    const scallopClients = Array(pairs.length).fill(0)
+        .map((_, idx) => {
+            shuffle(MAIN_NODES);
+            return new Scallop({
+                secretKey,
+                networkType: "mainnet",
+                fullnodeUrls: [...MAIN_NODES, ...BACKUP_NODES]
+            });
+        });
+
     Logger.info('-'.repeat(80));
-    Logger.highlight(`You are executing with address: ${Logger.highlightValue(scallop.suiKit.currentAddress())}`);
+    Logger.highlight(`You are executing with address: ${Logger.highlightValue(scallopClients[0].suiKit.currentAddress())}`);
+
     while (true) {
-        // 使用 map 来创建一个 promise 数组，并让 TypeScript 推断类型
-        const tradePromises = pairs.map(([coinType1, coinType2]) =>
-            executeTrade(coinType1, coinType2, tradeAmounts)
-        );
+        pairs.map(([coinType1, coinType2], idx) => {
+            tradePromises[idx] = executeTrade(coinType1, coinType2, tradeAmounts, scallopClients[idx]);
+        });
 
-        // 等待所有的 promise 解决
-        await Promise.all(tradePromises);
-
-        // 每个交易之间暂停一下
-        await new Promise(resolve => setTimeout(resolve, 2500));
+        try {
+            // 等待所有的 promise 解决
+            await Promise.all(tradePromises);
+    
+            // 每个交易之间暂停一下
+            await new Promise(resolve => setTimeout(resolve, 2500));
+        } catch (e) {
+            Logger.error(JSON.stringify(e));
+        }
     }
 }
 
-main();
+main().then(console.log).finally(() => process.exit(0));
