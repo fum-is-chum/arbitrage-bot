@@ -13,6 +13,7 @@
     "@scallop-io/sui-kit": "^0.44.0",
     "@scallop-io/sui-scallop-sdk": "^0.44.0",
     "aftermath-ts-sdk": "^1.1.2",
+    "bignumber.js": "^9.1.2",
     "dotenv": "^16.3.1"
   },
   "devDependencies": {

@@ -1,30 +1,38 @@
-import * as dotenv from 'dotenv';
+import { CoinStruct, PaginatedCoins, SuiClient, SuiHTTPTransport } from '@mysten/sui.js/client';
+import { SuiTxBlock, normalizeStructTag } from "@scallop-io/sui-kit";
 import { Scallop } from "@scallop-io/sui-scallop-sdk";
-import { SuiClient, SuiHTTPTransport } from '@mysten/sui.js/client';
-import { afConfigAddresses } from './afConfigAddresses';
 import { Aftermath, AftermathApi, IndexerCaller } from 'aftermath-ts-sdk';
-import { Logger } from './logger';
+import BigNumber from 'bignumber.js';
+import * as dotenv from 'dotenv';
+import { afConfigAddresses } from './afConfigAddresses';
 import { CoinType, coins } from './coinTypes';
-import { formatCoinAmount } from './tradeUtils';
-import { getCurrentTimeUTC8 } from './dateUtils';
-import { getAllPairs, getAllCoin } from './tradeUtils';
 import { BACKUP_NODES, MAIN_NODES } from './const/rpc';
+import { getCurrentTimeUTC8 } from './dateUtils';
+import { Logger } from './logger';
+import { formatCoinAmount, getAllCoin, getAllPairs } from './tradeUtils';
 import { runInBatch, shuffle } from './utils/common';
 dotenv.config();
 
 const tradeAmounts: { [key in CoinType]: number[] } = {
-    'sui': [100, 200, 500],
-    'usdc': [50, 100, 1000],
-    'usdt': [50, 100, 1000],
+    'sui': [50, 100, 200, 500, 1000, 2000, 5000, 10000],
+    'usdc': [50, 100, 200, 500, 1000, 2000, 5000, 10000],
+    'usdt': [50, 100, 200, 500, 1000, 2000, 5000, 10000],
     // 'eth': [0.01, 0.05, 0.1],
     // 'cetus': [1000, 2000, 3000]
 };
 
 const secretKey = process.env.secretKey;
 
-async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAmounts: { [key in CoinType]: number[] }, scallop: Scallop) {
-    const tasks = tradeAmounts[coinTypeIn].map( (amount) => async () => {
+async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAmounts: { [key in CoinType]: number[] }, gasCoins: CoinStruct[]) {
+    const tasks = tradeAmounts[coinTypeIn].map((amount, idx) => async () => {
         try {
+            shuffle(MAIN_NODES);
+            const scallop = new Scallop({
+                secretKey,
+                networkType: "mainnet",
+                fullnodeUrls: [...MAIN_NODES, ...BACKUP_NODES]
+            });
+
             const scallopClient = await scallop.createScallopClient();
             const scallopBuilder = await scallop.createScallopBuilder();
 
@@ -39,8 +47,15 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
             );
 
             const afRouterApi = AfApi.Router();
-            const tx = await scallopBuilder.createTxBlock();
+            const tx = scallopBuilder.createTxBlock();
             tx.setSender(scallop.suiKit.currentAddress());
+            tx.setGasPayment([
+                {
+                    objectId: gasCoins[idx].coinObjectId,
+                    version: gasCoins[idx].version,
+                    digest: gasCoins[idx].digest,
+                }
+            ]);
 
             // Merge input coins.
             const userInCoins = await getAllCoin(scallopClient, scallop.suiKit.currentAddress(), coins[coinTypeIn].address);
@@ -145,43 +160,97 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
         }
     });
     try {
-        await runInBatch(tasks, +(process.env.BATCH_SIZE ?? 6));
+        await runInBatch(tasks, 8, 1500);
     } catch (e) {
         Logger.error(JSON.stringify(e));
     }
 }
 
+const getCoins = async (coinType: string, owner: string, client: SuiClient) => {
+    let cursor: string | null | undefined = null;
+    const allCoins: CoinStruct[] = [];
+
+    if (coinType && owner) {
+        do {
+            const { data, nextCursor }: PaginatedCoins = await client.getCoins({
+                owner: owner,
+                coinType: normalizeStructTag(coinType),
+                cursor,
+                limit: 50,
+            });
+
+            if (!data || !data.length) {
+                break;
+            }
+
+            allCoins.push(...data);
+            cursor = nextCursor;
+        } while (cursor);
+    }
+
+    return allCoins.filter((coin) => {
+        const amount = BigNumber(coin.balance).shiftedBy(-1 * 9);
+        return amount.gte(0.5);
+    });
+};
+
+const splitGasCoins = async (scallop: Scallop) => {
+    const suiBalance = await scallop.suiKit.getBalance(normalizeStructTag('0x2::sui::SUI'));
+    if (suiBalance.coinObjectCount < 8) {
+        // split coins into 8 
+        const totalAmount = BigNumber(suiBalance.totalBalance).div(8).precision(9).toNumber();
+        const amounts = Array(7).fill(totalAmount);
+        const tx = new SuiTxBlock();
+        tx.setSender(scallop.suiKit.currentAddress());
+        const coins = tx.splitSUIFromGas(amounts);
+
+        tx.transferObjects(amounts.map((_, idx) => coins[idx]), scallop.suiKit.currentAddress());
+        const res = await scallop.suiKit.signAndSendTxn(tx);
+        if (res.effects && res.effects.status.status === 'success') {
+            console.log(`success: ${res.digest}`);
+        } else {
+            console.error(`failed: ${res.digest}`);
+            return false;
+        };
+
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        return true;
+    }
+    return true;
+};
+
 async function main() {
     const pairs = getAllPairs(Object.keys(coins) as CoinType[]);
     const tradePromises: Promise<void>[] = Array(pairs.length).fill(0);
-    const scallopClients = Array(pairs.length).fill(0)
-        .map((_, idx) => {
-            shuffle(MAIN_NODES);
-            return new Scallop({
-                secretKey,
-                networkType: "mainnet",
-                fullnodeUrls: [...MAIN_NODES, ...BACKUP_NODES]
-            });
-        });
+
+    const scallop = new Scallop({
+        secretKey,
+        networkType: "mainnet",
+        fullnodeUrls: [...MAIN_NODES, ...BACKUP_NODES]
+    });
 
     Logger.info('-'.repeat(80));
-    Logger.highlight(`You are executing with address: ${Logger.highlightValue(scallopClients[0].suiKit.currentAddress())}`);
+    Logger.highlight(`You are executing with address: ${Logger.highlightValue(scallop.suiKit.currentAddress())}`);
+
+    const s = await splitGasCoins(scallop);
+    if(!s) return;
+    const gasCoins = await getCoins('0x2::sui::SUI', scallop.suiKit.currentAddress(), scallop.suiKit.client());
 
     while (true) {
         pairs.map(([coinType1, coinType2], idx) => {
-            tradePromises[idx] = executeTrade(coinType1, coinType2, tradeAmounts, scallopClients[idx]);
+            tradePromises[idx] = executeTrade(coinType1, coinType2, tradeAmounts, gasCoins);
         });
 
         try {
             // 等待所有的 promise 解决
             await Promise.all(tradePromises);
-    
+
             // 每个交易之间暂停一下
-            await new Promise(resolve => setTimeout(resolve, 2500));
+            await new Promise(resolve => setTimeout(resolve, 3000));
         } catch (e) {
             Logger.error(JSON.stringify(e));
         }
     }
 }
 
-main().then(console.log).finally(() => process.exit(0));
+main().then(console.log).catch(console.error).finally(() => process.exit(0));

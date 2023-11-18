@@ -10,16 +10,14 @@ export function shuffle(array: string[]) {
 
 export async function runInBatch<T>(
     functionsToRun: (() => Promise<T>)[],
-    batchSize = 100
-): Promise<PromiseSettledResult<T>[]> {
-    const results: PromiseSettledResult<T>[] = [];
-
+    batchSize = 100,
+    delay = 1000,
+): Promise<void> {
     while (functionsToRun.length !== 0) {
         const currFunctionsToRun = functionsToRun.splice(0, batchSize);
         const promises = currFunctionsToRun.map((fToRun) => fToRun());
         const currResults = await Promise.allSettled(promises);
-        results.push(...currResults);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        // results.push(...currResults);
     }
-
-    return results;
 }
