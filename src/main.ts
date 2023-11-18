@@ -11,6 +11,8 @@ import { getCurrentTimeUTC8 } from './dateUtils';
 import { Logger } from './logger';
 import { formatCoinAmount, getAllCoin, getAllPairs } from './tradeUtils';
 import { runInBatch, shuffle } from './utils/common';
+import { CetusTxBuilder } from "./app/cetus/txBuilder";
+import { CetusPool } from "./app/cetus/contract";
 dotenv.config();
 
 const tradeAmounts: { [key in CoinType]: number[] } = {
@@ -81,11 +83,33 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
             coinInType = coins[coinTypeIn].address;
             coinOutType = coins[coinTypeOut].address;
 
-            flashloanAmount = amount * 10 ** coins[coinTypeIn].decimal;
+            flashloanAmount = BigNumber(amount).shiftedBy(1 * coins[coinTypeIn].decimal).toNumber();
             flashloanCoinType = coinTypeIn;
 
-            const [depositcoin, loan] = tx.borrowFlashLoan(flashloanAmount, flashloanCoinType);
+            let depositcoin;
+            let loan;
 
+            switch (coinTypeIn) {
+                case 'sui': {
+                    const [a, b] = CetusTxBuilder.borrow_b_repay_b(tx, CetusPool['usdc_sui'], flashloanAmount.toString(), coins['usdc'].address, coins['sui'].address);
+                    depositcoin = a;
+                    loan = b;
+                    break;
+                }
+                case 'usdc': {
+                    const [a, b] = CetusTxBuilder.borrow_a_repay_a(tx, CetusPool['usdc_sui'], flashloanAmount.toString(), coins['usdc'].address, coins['sui'].address);
+                    depositcoin = a;
+                    loan = b;
+                    break;
+                }
+                case 'usdt': {
+                    const [a, b] = CetusTxBuilder.borrow_a_repay_a(tx, CetusPool['usdt_sui'], flashloanAmount.toString(), coins['usdt'].address, coins['sui'].address);
+                    depositcoin = a;
+                    loan = b;
+                    break;
+                }
+            }
+            // const [depositcoin, loan] = tx.borrowFlashLoan(flashloanAmount, flashloanCoinType);
             const completeRoute = await new Aftermath("MAINNET")
                 .Router()
                 .getCompleteTradeRouteGivenAmountIn({
@@ -129,8 +153,24 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
 
             const [repayCoin] = tx.splitCoins(usdcCointOutId, [flashloanAmount]);
             tx.transferObjects([usdcCointOutId], scallop.suiKit.currentAddress());
-            tx.repayFlashLoan(repayCoin, loan, flashloanCoinType);
 
+            switch (coinTypeIn) {
+                case 'sui': {
+                    CetusTxBuilder.repay_b(tx, CetusPool['usdc_sui'], repayCoin, loan, coins['usdc'].address, coins['sui'].address);
+                    break;
+                }
+                case 'usdc': {
+                    CetusTxBuilder.repay_a(tx, CetusPool['usdc_sui'], repayCoin, loan, coins['usdc'].address, coins['sui'].address);
+                    break;
+                }
+                case 'usdt': {
+                    CetusTxBuilder.repay_a(tx, CetusPool['usdt_sui'], repayCoin, loan, coins['usdt'].address, coins['sui'].address);
+                    break;
+                }
+            }
+            // tx.repayFlashLoan(repayCoin, loan, flashloanCoinType);
+
+            // console.dir(tx.blockData, { depth: 3 });
             const borrowFlashLoanResult = await scallopBuilder.signAndSendTxBlock(tx);
             if (!borrowFlashLoanResult || !('digest' in borrowFlashLoanResult)) {
                 throw new Error("Unexpected response from signAndSendTxBlock, 'digest' not found.");
@@ -160,7 +200,7 @@ async function executeTrade(coinTypeIn: CoinType, coinTypeOut: CoinType, tradeAm
         }
     });
     try {
-        await runInBatch(tasks, 8, 1500);
+        await runInBatch(tasks, 1, 1500);
     } catch (e) {
         Logger.error(JSON.stringify(e));
     }
@@ -233,7 +273,7 @@ async function main() {
     Logger.highlight(`You are executing with address: ${Logger.highlightValue(scallop.suiKit.currentAddress())}`);
 
     const s = await splitGasCoins(scallop);
-    if(!s) return;
+    if (!s) return;
     const gasCoins = await getCoins('0x2::sui::SUI', scallop.suiKit.currentAddress(), scallop.suiKit.client());
 
     while (true) {
